@@ -7,12 +7,6 @@ has_toc: false
 nav_order: 3
 ---
 
-
-# Project Page Template
-
-When you begin your project, use this template to fill out some critical information in the initial headers of your GitHub Pages site. Also see the [Project Setup page](https://pennlinc.github.io/docs/LabHome/ProjectSetup/).
-
-
 ### Project Title
 
 Linking Brain Connectivity to Borderline Personality Disorder
