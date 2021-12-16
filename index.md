@@ -1,19 +1,8 @@
----
-layout: default
-title: Project Template
-parent: Documentation
-has_children: false
-has_toc: false
-nav_order: 3
----
+<br>
+<br>
+# Linking Brain Connectivity to Borderline Personality Disorder
 
-### Project Title
-
-Linking Brain Connectivity to Borderline Personality Disorder
-
-### Brief Project Description
-
-Predicting BPD symptoms in developing and adult datasets
+*Symptoms on the borderline personality spectrum (BPS) often begin in childhood and adolescence, yet the underlying developmental neurobiology of these debilitating symptoms remains sparsely explored. Here, we seek to describe functional network abnormalities linked to the BPS in both young adults and children.*
 
 ### Project Lead(s) 
 
