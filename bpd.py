@@ -12,6 +12,7 @@ import pennlinckit.data
 import pennlinckit.network
 
 from statsmodels.stats.multitest import multipletests
+import statsmodels.api as sm
 
 import seaborn as sns
 import matplotlib.pylab as plt
@@ -75,7 +76,22 @@ def make_data(source,cores=10):
 	data = pennlinckit.data.dataset(source,task='**', parcels='Schaefer417',fd_scrub=.2)
 	data.load_matrices()
 	data.filter(way='>',value=100,column='n_frames')
-	score_bdp(data)
+
+	if source == 'hcpd-dcan':
+		gender = np.zeros((data.subject_measures.shape[0]))
+		gender[data.subject_measures.sex=='F'] = 1
+		data.subject_measures['gender_dummy'] = gender	
+
+	if source == 'hcpya':
+		gender = np.zeros((data.subject_measures.shape[0]))
+		gender[data.subject_measures.Gender=='F'] = 1
+		data.subject_measures['gender_dummy'] = gender
+
+	if source == 'pnc':
+		data.subject_measures['gender_dummy'] = data.subject_measures.sex.values - 1
+
+	if source == 'hcpya' or source == 'hcpd-dcan' or source == 'nki':
+		score_bdp(data)
 	data.network = pennlinckit.network.make_networks(data,yeo_partition=7,cores=cores-1)
 	pennlinckit.utils.save_dataset(data,'/{0}/data/{1}.data'.format(homedir,source))
 
@@ -85,6 +101,18 @@ def submit_make_data(source):
 	"""
 	script_path = '/cbica/home/bertolem/bpd/bpd.py make_data {0}'.format(source) #it me
 	pennlinckit.utils.submit_job(script_path,'d_{0}'.format(source),RAM=40,threads=10)
+
+def load_data(source,filters=['bpd_score','meanFD']):
+	data = pennlinckit.utils.load_dataset('/{0}/data/{1}.data'.format(homedir,source))
+	gender = np.zeros((data.subject_measures.shape[0]))
+	if source == 'hcpya':
+		gender[data.subject_measures.Gender=='F'] = 1
+	if source == 'hcpd-dcan':
+		gender[data.subject_measures.sex=='F'] = 1
+	data.subject_measures['gender_dummy'] = gender
+	for f in filters:
+		data.filter(way='has_subject_measure',value=f)
+	return data
 
 def dumb_predict():
 	adult = pennlinckit.utils.load_dataset('/{0}/data/{1}.matrices'.format(homedir,'hcpya'))
@@ -99,60 +127,52 @@ def dumb_predict():
 		if d >5:
 			print (pearsonr(prediction[:d],dev.subject_measures.bpd_score.values[:d]))
 
-def apply_ya_2_dev(source='full',remove_linear_vars= ['gender_dummy','meanFD','interview_age'],hcpya_remove_linear_vars= ['gender_dummy','meanFD']):
+def apply_ya_2_dev(source='full',dev_data='hcpd-dcan',remove_linear_vars= ['gender_dummy','meanFD','interview_age'],hcpya_remove_linear_vars= ['gender_dummy','meanFD']):
 	regress_name = '_'.join(remove_linear_vars)
-	dev = pennlinckit.utils.load_dataset('/{0}/data/{1}.data'.format(homedir,'hcpd-dcan'))
-	bpd_score_mask = np.isnan(dev.subject_measures.bpd_score.values)
-	fold_length = len(bpd_score_mask[bpd_score_mask==False])
-
-	gender = np.zeros((dev.subject_measures.shape[0]))
-	gender[dev.subject_measures.sex=='F'] = 1
-	dev.subject_measures['gender_dummy'] = gender	
-
-
-	ya = pennlinckit.utils.load_dataset('/{0}/data/{1}.data'.format(homedir,'hcpya'))
-	gender = np.zeros((ya.subject_measures.shape[0]))
-	gender[ya.subject_measures.Gender=='F'] = 1
-	ya.subject_measures['gender_dummy'] = gender
 	
+	dev = pennlinckit.utils.load_dataset('/{0}/data/{1}.data'.format(homedir,dev_data))
+	ya = pennlinckit.utils.load_dataset('/{0}/data/{1}.data'.format(homedir,'hcpya'))
+
 	ya.filter(way='has_subject_measure',value='bpd_score')
-	# dev.filter(way='has_subject_measure',value='bpd_score')
 	dev.filter(way='has_subject_measure',value='meanFD')
 
-	if source == 'same': 
+	if source == 'same': # get the lowest motion subjects to match the size of hcpd
+		bpd_score_mask = np.isnan(dev.subject_measures.bpd_score.values)
+		fold_length = len(bpd_score_mask[bpd_score_mask==False])
 		match_size_mean_FD = ya.subject_measures.meanFD.values[np.argsort(ya.subject_measures.meanFD)][fold_length+1]    
-		ya.filter('<',match_size_mean_FD,"meanFD") # get the lowest motion subjects to match the size of hcpd
-	else: ya.filter('<',.2,"meanFD") # get the lowest motion subjects to match the size of hcpd
+		ya.filter('<',match_size_mean_FD,"meanFD") 
 	
-	
+	else: # just get low motion subjects
+		ya.filter('<',.2,"meanFD") 
+
+	"""
+	fit the model to predict bpd in hcpya
+	"""
 
 	ya.targets = ya.subject_measures['bpd_score'].values
-
 	models = []
 	acc = []
-	
-	for node in range(400):		
-		
+	for node in range(ya.matrix.shape[1]):		
 		ya.features = ya.matrix[:,node]
-
 		nuisance_model = LinearRegression()
 		nuisance_model.fit(ya.subject_measures[hcpya_remove_linear_vars].values,ya.features) 
 		ya.features  = ya.features  - nuisance_model.predict(ya.subject_measures[hcpya_remove_linear_vars].values)
-	
 		m = RidgeCV()
 		m.fit(ya.features,ya.targets)
 		acc.append(pearsonr(m.predict(ya.features),ya.targets)[0])
 		models.append(m)
-		
 
-	
-	r_iters = 1000
-	predictions = np.zeros((400,dev.matrix.shape[0]))
-	random_predictions = np.zeros((400,r_iters,dev.matrix.shape[0]))
-	for node in range(400):
+	"""
+	apply hcpya to the developmental dataset
+	this includes making prediction on a shuffled version of the features (edge weights)
+	"""
+
+	r_iters = 100
+	predictions = np.zeros((dev.matrix.shape[1],dev.matrix.shape[0]))
+	random_predictions = np.zeros((dev.matrix.shape[1],r_iters,dev.matrix.shape[0]))
+	for node in range(dev.matrix.shape[1]):
 		model = models[node]
 		dev.features = dev.matrix[:,node]
-		# dev.features[np.isnan(dev.features)] = 0.0
 		nuisance_model = LinearRegression()
 		nuisance_model.fit(dev.subject_measures[remove_linear_vars].values,dev.features) 
 		dev.features  = dev.features  - nuisance_model.predict(dev.subject_measures[remove_linear_vars].values)
@@ -163,16 +183,28 @@ def apply_ya_2_dev(source='full',remove_linear_vars= ['gender_dummy','meanFD','i
 			np.random.shuffle(r_feats)
 			random_predictions[node,random] = model.predict(r_feats)
 
-
-	mask = np.isnan(dev.subject_measures.bpd_score.values)==False
 	prediction_acc = pennlinckit.utils.matrix_corr(predictions[:,mask],dev.subject_measures.bpd_score.values[mask])
-	random_pred_acc = np.zeros((400,r_iters))
+
+	#save the prediction accuracy brain
+	mask = np.isnan(dev.subject_measures.bpd_score.values)==False
+	np.save('/{0}/data/ridge/hcpya2hcpd_{1}_prediction_acc_{2}.npy'.format(homedir,source,regress_name),prediction_acc)
+
+	#calculate the random prediction accuracy
+	random_pred_acc = np.zeros((dev.matrix.shape[1],r_iters))
 	for random in range(r_iters):
 		random_pred_acc[:,random] = pennlinckit.utils.matrix_corr(random_predictions[:,random,mask],dev.subject_measures.bpd_score.values[mask])
 
-	prediction_p = np.zeros(400)
+	# how different is random accuracy from the real ones?
+	prediction_p = np.zeros(dev.matrix.shape[1])
 	for node in range(dev.matrix.shape[1]):
 		prediction_p[node] = scipy.stats.ttest_1samp(random_pred_acc[node],prediction_acc[node])[1]
+
+
+	colors = np.array(pennlinckit.utils.make_heatmap(pennlinckit.utils.cut_data(prediction_acc,1.5),sns.color_palette("light:r", as_cmap=False,n_colors=1001)))
+	out_path='/{0}/brains/prediction_acc_all'.format(homedir)
+	pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
+
+	1/0
 
 	correction = multipletests(prediction_p,method='bonferroni')[0]
 	correction[prediction_acc<0.0] = False
@@ -415,7 +447,77 @@ def analyze_predict(source,age,sex):
 	# out_path='/{0}/brains/{1}_{2}_prediction_acc'.format(homedir,source,'_'.join(regressors))
 	# pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
 
+def developmental(node):
+	data = load_data('hcpd-dcan')
+	node_coefs = np.zeros((400))
+	for node2 in range(400):
+		if node2 == node:continue
+		node_df = pd.DataFrame(columns=['fc','age','bpd'])
+		node_df['fc'] = data.matrix[:,node,node2]
+		node_df['bpd'] = data.subject_measures.bpd_score.values
+		node_df['age'] = data.subject_measures.interview_age.values
+		#does bpd increase as fc and age increase together?
+		model = sm.OLS.from_formula(formula='bpd ~ fc + age + age:fc', data=node_df).fit()
+		result_df = pd.read_html(model.summary().tables[1].as_html(),header=0,index_col=0)[0]
+		node_coefs[node2] = result_df['coef'][-1]
+	np.save('{0}/data/dev/{1}_age_fc_interaction.npy'.format(homedir,node),node_coefs)
+
+def submit_developmental():
+	"""
+	The above function makes the predictions for each factor
+	this submit it
+	"""
+	for node in range(400):
+		script_path = '/cbica/home/bertolem/bpd/bpd.py developmental {0}'.format(node) #it me
+		pennlinckit.utils.submit_job(script_path,'d_{0}'.format(node),RAM=12,threads=1)
+
+def dev_region_predict(data,node,**model_args):
+	data.targets = data.subject_measures['interview_age'].values
+	data.features = data.matrix[:,node]
+	model_args['self'] = data
+	pennlinckit.utils.predict(**model_args)
+
+def dev_predict(node):
+	regressors = ['meanFD']
+	data = load_data('hcpd-dcan',['meanFD'])
+	dev_region_predict(data,node,**{'model':'ridge','cv':'KFold','folds':10,'remove_linear_vars':regressors})
+	np.save('{0}/data/ridge/age_prediction_{1}_{2}.npy'.format(homedir,node,'_'.join(regressors)),data.prediction)
+
+def submit_dev_predict():
+	"""
+	The above function makes the predictions for each factor
+	this submit it
+	"""
+	for node in range(400):
+		script_path = '/cbica/home/bertolem/bpd/bpd.py dev_predict {0}'.format(node) #it me
+		pennlinckit.utils.submit_job(script_path,'p{0}'.format(node),RAM=12,threads=1)
+
+def analyze_developmental():
+	data = load_data('hcpd-dcan',['meanFD'])
+	age_acc = np.zeros((400))
+	for node in range(400):
+		age_acc[node] = pearsonr(data.subject_measures.interview_age,np.load('{0}/data/ridge/age_prediction_{1}_{2}.npy'.format(homedir,node,'_'.join(['meanFD']))))[0]
+
+	p_acc = np.load('/{0}/data/ridge/hcpya2hcpd_full_prediction_acc_meanFD.npy'.format(homedir))
+
+	real_r = pearsonr(p_acc,age_acc)[0]
+	spin = pennlinckit.brain.spin_test(p_acc,age_acc)
+	print (pennlinckit.brain.spin_stat(p_acc,age_acc,spin))
+
+	sns.displot(spin)
+	plt.vlines(real_r,0,100)
+	plt.savefig('{0}/figures/dev_spin.pdf'.format(homedir))
+
+	colors = np.array(pennlinckit.utils.make_heatmap(pennlinckit.utils.cut_data(age_acc,1.5),sns.color_palette("light:r", as_cmap=False,n_colors=1001)))
+	out_path='/{0}/brains/prediction_age'.format(homedir)
+	pennlinckit.brain.write_cifti(colors,out_path,parcels='Schaefer400',wb_path='/cbica/home/bertolem/workbench/bin_rh_linux64/wb_command')
+
+
 if len(sys.argv) > 1:
 	if sys.argv[1] == 'make_data': make_data(sys.argv[2])
 	if sys.argv[1] == 'predict': 
 		predict(int(sys.argv[2]),sys.argv[3],int(sys.argv[4]),int(sys.argv[5]))
+	if sys.argv[1] == 'dev_predict': 
+		dev_predict(int(sys.argv[2]))
+	if sys.argv[1] == 'developmental': 
+		developmental(int(sys.argv[2]))
