@@ -6,7 +6,7 @@
 
 ### Project Lead(s) 
 
-Bertolero
+Arielle Keller, taken over from Max Bertolero
 
 ### Faculty Lead(s)
 
@@ -18,7 +18,7 @@ TBD
 
 ### Collaborators
 
-Include people here as they make contributions (useful as our memory is imperfect and it is bad to forget contributions in long-running projects)
+TBD
 
 ### Project Start Date
 
